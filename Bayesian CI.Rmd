@@ -1,0 +1,637 @@
+```{r}
+library(dplyr)
+library(tidyverse)
+library(readxl)
+```
+**loading prior data**
+Mut_prev is Mut+mix/N
+```{r}
+published_historical <- read_excel("~/Rosenthal Lab/Tororolong/Plots /Feb 10 plot/published_historical.xlsx")
+
+published_historical <- published_historical %>% 
+  filter(Site == "Tororo") %>%
+  mutate("Mut_N" = Mix + Mut) 
+  
+```
+
+
+
+**prior**
+*The beta distribution for Tororo 2016, a very "informative" prior*
+dbeta(x_vals, shape 1 = a = Mut, shape 2 = b = WT)
+our measure, pi, is distributed dbeta(x_vals, shape 1 = a = 32, shape 2 = b = 32)
+
+pi ~ beta(32,32)
+```{r}
+library(ggplot2)
+
+# Generate Y_vals
+X_vals <- seq(0, 1, by = 0.01)
+
+# Calculate the density values using dbeta
+densities_informative <- dbeta(X_vals, 32, 32)
+densities_uninformative <- dbeta(X_vals, 8, 8)
+
+# Plotting the beta density
+ggplot() +
+  geom_line(aes(x = X_vals, y = densities_informative, color = "Informative"), size = 0.75) +
+  geom_line(aes(x = X_vals, y = densities_uninformative, color = "Uninformative"), size = 0.75) +
+  labs(title = "Density of PfCRTK76T, informative vs uninformative prior information",
+       x = "Prevalence",
+       y = "Density") +
+  scale_color_manual(values = c("Informative" = "lightblue", "Uninformative" = "darkgreen"), 
+                     labels = c("Informative Prior", "Uninformative Prior")) +
+  theme_minimal()
+
+
+```
+
+
+**likelihood distribution**
+Y ∼ Binomial(N, pi)
+Y ∼ Binomial(27, .48)
+```{r}
+library(ggplot2)
+
+# Generate X_vals representing the number of successes
+X_vals_binom <- 0:27
+
+# Calculate the binomial likelihood function using dbinom
+likelihood <- dbinom(X_vals_binom, size = 27, prob = 0.48)
+
+# Create a data frame for plotting
+likelihood_df <- data.frame(X_vals_binom, likelihood)
+
+# Plot the binomial likelihood
+ggplot(likelihood_df, aes(x = X_vals_binom, y = likelihood)) +
+  geom_line(color = "coral") +
+  labs(title = "Binomial Likelihood Function (data I generated)",
+       x = "Mut_N",
+       y = "Likelihood") + theme_minimal()
+
+
+
+```
+As we can see, the probability is highest around 13
+
+
+
+**prior and likelihood together**
+described as a conjugate beta distribution 
+
+_new data_
+we see y = 13 infections = Mut_N
+n = 27 infections = N
+
+Pi = .48
+
+_prior_
+a = Mut_N = 32
+b = WT_N = 32
+
+
+Beta(a + y, b + n − y)
+```{r}
+post_X <- seq(0,1, .01)
+
+posterior <- dbeta(post_X, shape1 = 32 + 13, shape2 = 32 + 27 - 13)
+
+library(ggplot2)
+
+ggplot() +
+  geom_line(aes(x = post_X, y = posterior), color = "purple") +
+  labs(title = "Posterior Prevalence of PfCRT K76T",
+       x = "Prevalence",
+       y = "Posterior Likelihood") +
+  theme_minimal() 
+
+
+```
+```{r}
+qbeta(.5, shape1 = 32 + 13, shape2 = 32 + 27 - 13)
+```
+
+**making the percolatR**
+**specifying posterior distribution scaled by N**
+Because we are specifying our binomial dist as our 
+```{r}
+
+percolateR <- percolateR <- function(Mut_N_Prior, WT_N_Prior, Mut_N_New, N_New){
+  
+  a_post <- Mut_N_Prior + Mut_N_New #shape parameter in posterior 
+  b_post <- WT_N_Prior + N_New - Mut_N_New
+  
+  posterior <- round(qbeta(c(0.5, 0.025, 0.975), a_post, b_post), 3)
+  
+  return(tibble::tibble(
+    "Posterior Prevalence" = posterior[1],
+    "Posterior LB" = posterior[2],
+    "Posterior UB" = posterior[3]
+  ))
+
+}
+```
+
+```{r}
+#testing the percolator on my 2012 vs other 2012 data 
+
+percolateR(Mut_N_Prior = 12, WT_N_Prior = 3, Mut_N_New = 17, N_New = 18)
+
+#it works
+```
+
+**expanding the percolatR out for df's**
+```{r}
+library(readr)
+filt_bayes <- read_csv("~/Rosenthal Lab/Tororolong/Plots /Feb 10 plot/filt_bayes.csv")
+
+
+df_prior_e<- published_historical %>% select(Marker, Year, WT, Mut_N) 
+
+df_likelihood <- filt_bayes
+
+
+df_likelihood
+
+```
+
+```{r}
+#reformatting the table for prior 
+data_long <- na.omit(pivot_longer(df_likelihood, 
+                          cols = -Locus,
+                          names_to = c(".value", "Date"),
+                          names_pattern = "(Mut_N)_(\\d+)"))
+
+data_long2 <- na.omit(pivot_longer(df_likelihood, 
+                          cols = -Locus,
+                          names_to = c(".value", "Date"),
+                          names_pattern = "(N) (\\d+)"))
+
+
+true_likelihood <- left_join(data_long, data_long2, by = c("Locus", "Date"))
+
+```
+
+renaming the columns
+```{r}
+df_prior <- df_prior_e %>%
+  rename("WT_N_Prior" = WT,
+         "Mut_N_Prior" = Mut_N)
+
+df_likelihood <- true_likelihood %>%
+  rename("N_New" = N,
+         "Mut_N_New" = Mut_N,
+         "Year" = Date)
+
+
+
+```
+
+```{r}
+
+#this function just joins the dfs by date filtering and by via marker number
+#for example if I wanted 
+percolateR_0.1 <- function(df_prior, df_likelihood, marker_number) {
+  
+  pripost <- left_join(
+    df_prior %>% filter(grepl(marker_number, Marker)), 
+    df_likelihood %>% filter(grepl(marker_number, Locus)),
+    by = c("Year")
+  )
+  
+  return(na.omit(pripost))
+}
+
+percolateR_0.1(df_prior, df_likelihood, 76)
+
+
+
+```
+```{r}
+
+#this function just joins the dfs by date filtering and by via marker number
+#for example if I wanted 
+percolateR_0.2 <- function(df_prior, df_likelihood, marker_number) {
+  
+  #combining the df's based on marker number and year, all years represented in both the posterior and the likelihood dataset 
+  pripost <- left_join(
+    df_prior %>% filter(grepl(marker_number, Marker)), 
+    df_likelihood %>% filter(grepl(marker_number, Locus)),
+    by = c("Year")
+  )
+  
+  #vectorizing the Ns
+  Mut_N_Prior <- pripost$Mut_N_Prior
+  WT_N_Prior <- pripost$WT_N_Prior
+  
+  N_New <- pripost$N_New
+  Mut_N_New <- pripost$N_New
+  
+  
+  #for every thing in the list do the bayesian tabulation
+  for (i in 1:length(Mut_N_Prior, WT_N_Prior, N_New, Mut_N_New)) { 
+    
+  a_post[i] <- Mut_N_Prior[i] + Mut_N_New[i] #shape parameter in posterior 
+  b_post[i] <- WT_N_Prior[i] + N_New[i] - Mut_N_New[i]
+  
+  
+  posterior <- round(qbeta(c(0.5, 0.025, 0.975), a_post[i], b_post[i]), 3)
+  
+  
+  }
+  
+  return(na.omit(pripost$posterior))
+}
+
+percolateR_0.2(df_prior, df_likelihood, 540)
+
+```
+
+```{r}
+percolateR_0.2 <- function(df_prior, df_likelihood, marker_number) {
+  
+  # Combine the data frames based on marker number
+  pripost <- left_join(
+    df_prior %>% filter(grepl(marker_number, Marker)), 
+    df_likelihood %>% filter(grepl(marker_number, Locus)),
+    by = "Year"
+  )
+  
+  # Vectorize the variables
+  Mut_N_Prior <- pripost$Mut_N_Prior
+  WT_N_Prior <- pripost$WT_N_Prior
+  N_New <- pripost$N_New
+  Mut_N_New <- pripost$Mut_N_New
+  
+  # Initialize vectors to store posterior values
+  posterior_prevalence <- numeric(length(Mut_N_Prior))
+  posterior_lb <- numeric(length(Mut_N_Prior))
+  posterior_ub <- numeric(length(Mut_N_Prior))
+  
+  # Calculate posterior values for each row
+  for (i in 1:length(Mut_N_Prior)) { 
+    a_post <- Mut_N_Prior[i] + Mut_N_New[i] # Shape parameter in posterior 
+    b_post <- WT_N_Prior[i] + N_New[i] - Mut_N_New[i]
+    posterior <- round(qbeta(c(0.5, 0.025, 0.975), a_post, b_post), 3)
+    
+    # Store posterior values in vectors
+    posterior_prevalence[i] <- posterior[1]
+    posterior_lb[i] <- posterior[2]
+    posterior_ub[i] <- posterior[3]
+  }
+  
+  # Add posterior values to the pripost data frame
+  pripost <- bind_cols(pripost, 
+                       "Posterior Prevalence" = posterior_prevalence,
+                       "Posterior LB" = posterior_lb,
+                       "Posterior UB" = posterior_ub)
+  
+  # Return the updated data frame
+  return(na.omit(pripost))
+}
+
+```
+
+```{r}
+ dhfr51 <- percolateR_0.2(df_prior, df_likelihood, 51)
+
+head(dhfr51) 
+
+
+
+```
+**
+```{r}
+percolateR(Mut_N_Prior = 0, WT_N_Prior = 0, Mut_N_New = 46.5, N_New = 48.5)
+
+percolateR_0.5(df_prior, df_likelihood, 51)
+```
+```{r}
+PfMDR1_86 <- percolateR_0.2(df_prior, df_likelihood, 86)
+PfMDR1_148 <- percolateR_0.2(df_prior, df_likelihood, 148)
+PfMDR1_1246 <- percolateR_0.2(df_prior, df_likelihood, 1246)
+
+PfMDR1_86$Year <- as.numeric(PfMDR1_86$Year)
+PfMDR1_148$Year <- as.numeric(PfMDR1_148$Year)
+PfMDR1_1246$Year <- as.numeric(PfMDR1_1246$Year)
+
+
+
+# Convert Year to numeric
+PfMDR1$Year <- as.numeric(PfMDR1$Year)
+
+# Plotting
+library(ggplot2)
+
+
+
+
+```
+```{r}
+percolateR_0.3 <- function(df_prior, df_likelihood, marker_number) {
+  
+  # Combine the data frames based on marker number and year
+  pripost <- left_join(
+    df_prior %>% filter(grepl(marker_number, Marker)), 
+    df_likelihood %>% filter(grepl(marker_number, Locus)),
+    by = "Year"
+  )
+  
+  # Vectorize the variables
+  Mut_N_Prior <- pripost$Mut_N_Prior
+  WT_N_Prior <- pripost$WT_N_Prior
+  N_New <- pripost$N_New
+  Mut_N_New <- ifelse(is.na(pripost$Mut_N_New), pripost$Mut_N_New, pripost$N_New - pripost$Mut_N_New)
+  
+  # Calculate posterior values for each row
+  posterior_prevalence <- numeric(length(Mut_N_Prior))
+  posterior_lb <- numeric(length(Mut_N_Prior))
+  posterior_ub <- numeric(length(Mut_N_Prior))
+  
+  for (i in 1:length(Mut_N_Prior)) { 
+    a_post <- Mut_N_Prior[i] + Mut_N_New[i] # Shape parameter in posterior 
+    b_post <- WT_N_Prior[i] + N_New[i] - Mut_N_New[i]
+    posterior <- round(qbeta(c(0.5, 0.025, 0.975), a_post, b_post), 3)
+    
+    # Store posterior values in vectors
+    posterior_prevalence[i] <- posterior[1]
+    posterior_lb[i] <- posterior[2]
+    posterior_ub[i] <- posterior[3]
+  }
+  
+  # Add posterior values to the pripost data frame
+  pripost <- bind_cols(pripost, 
+                       "Posterior Prevalence" = posterior_prevalence,
+                       "Posterior LB" = posterior_lb,
+                       "Posterior UB" = posterior_ub)
+  
+  # Return the updated data frame
+  return(na.omit(pripost))
+}
+
+
+```
+
+```{r}
+ CRTK76T<- percolateR_0.3(df_prior, df_likelihood, 76)
+
+head(CRTK76T)
+```
+
+
+```{r}
+percolateR_0.4 <- function(df_prior, df_likelihood, marker_number) {
+  # Subset df_prior and df_likelihood to contain only the specified marker number
+  df_prior <- df_prior %>% filter(grepl(marker_number, Marker))
+  df_likelihood <- df_likelihood %>% filter(grepl(marker_number, Locus))
+
+  # Initialize vectors to store posterior values
+  posterior_prevalence <- numeric()
+  posterior_lb <- numeric()
+  posterior_ub <- numeric()
+  corresponding_year <- logical()
+
+  # Loop through each year in df_likelihood
+  for (i in 1:nrow(df_likelihood)) {
+    year <- df_likelihood$Year[i]
+
+    # Check if there's a corresponding year in df_prior
+    if (year %in% df_prior$Year) {
+      # Combine the data frames based on marker number and year
+      pripost <- left_join(
+        df_prior %>% filter(Year == year), 
+        df_likelihood %>% filter(Year == year),
+        by = "Year"
+      )
+
+      # Vectorize the variables
+      Mut_N_Prior <- pripost$Mut_N_Prior
+      WT_N_Prior <- pripost$WT_N_Prior
+      Mut_N_New <- pripost$Mut_N_New
+
+      # Calculate posterior values for the current year
+      a_post <- Mut_N_Prior + Mut_N_New
+      b_post <- WT_N_Prior + pripost$N_New - Mut_N_New
+      posterior <- round(qbeta(c(0.5, 0.025, 0.975), a_post, b_post), 3)
+
+      # Store posterior values in vectors
+      posterior_prevalence <- c(posterior_prevalence, posterior[1])
+      posterior_lb <- c(posterior_lb, posterior[2])
+      posterior_ub <- c(posterior_ub, posterior[3])
+      corresponding_year <- c(corresponding_year, TRUE)
+    } else {
+      # No corresponding year in df_prior, calculate Mut_N_New/N_New proportions
+      Mut_N_New_prop <- df_likelihood$Mut_N_New[i] / df_likelihood$N_New[i]
+
+      # Calculate confidence interval based on proportions using prop.test
+      prop_test <- prop.test(df_likelihood$Mut_N_New[i], df_likelihood$N_New[i], conf.level = 0.70)
+
+      # Store posterior values in vectors
+      posterior_prevalence <- c(posterior_prevalence, Mut_N_New_prop)
+      posterior_lb <- c(posterior_lb, prop_test$conf.int[1])
+      posterior_ub <- c(posterior_ub, prop_test$conf.int[2])
+      corresponding_year <- c(corresponding_year, FALSE)
+    }
+  }
+
+  # Create a data frame with the calculated values
+  pripost <- data.frame(Year = df_likelihood$Year,
+                        Locus = df_likelihood$Locus,
+                        Mut_N_Prior = pripost$Mut_N_Prior,
+                        WT_N_Prior = pripost$WT_N_Prior,
+                        Mut_N_New = df_likelihood$Mut_N_New,
+                        N_New = df_likelihood$N_New,
+                        Corresponding_Year = corresponding_year,
+                        Posterior_Prevalence = posterior_prevalence,
+                        Posterior_LB = posterior_lb,
+                        Posterior_UB = posterior_ub)
+
+  # Return the updated data frame
+  return(pripost)
+}
+
+
+```
+
+```{r}
+ CRTK76T<- percolateR_0.4(df_prior, df_likelihood, 76)
+```
+
+```{r}
+
+
+CRTK76T$Year <- as.numeric(CRTK76T$Year)
+
+ggplot(CRTK76T, aes(x = Year, y = `Posterior_Prevalence`)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = `Posterior_LB`, ymax = `Posterior_UB`), fill = "lightblue", alpha = 0.5) +
+  labs(x = "Year", y = "Posterior Prevalence",
+       title = "Posterior Prevalence PfCRTK76T",
+       subtitle = "Blue line represents posterior prevalence, light blue band represents 95% credible interval") +
+  theme_minimal()
+```
+**using a beta distribution non informative when there is no corresponding year**
+**fuck man**
+```{r}
+
+percolateR_0.5 <- function(df_prior, df_likelihood, marker_number) {
+  # Subset df_prior and df_likelihood to contain only the specified marker number
+  df_prior <- df_prior %>% filter(grepl(marker_number, Marker))
+  df_likelihood <- df_likelihood %>% filter(grepl(marker_number, Locus))
+
+  # Initialize vectors to store posterior values
+  posterior_prevalence <- numeric()
+  posterior_lb <- numeric()
+  posterior_ub <- numeric()
+  corresponding_year <- logical()
+  
+  # Initialize Mut_N_Prior and WT_N_Prior as NA vectors
+  Mut_N_Prior <- rep(NA, nrow(df_likelihood))
+  WT_N_Prior <- rep(NA, nrow(df_likelihood))
+
+  # Loop through each year in df_likelihood
+  for (i in 1:nrow(df_likelihood)) {
+    year <- df_likelihood$Year[i]
+
+    # Check if there's a corresponding year in df_prior
+    if (year %in% df_prior$Year) {
+      # Combine the data frames based on marker number and year
+      pripost <- left_join(
+        df_prior %>% filter(Year == year), 
+        df_likelihood %>% filter(Year == year),
+        by = "Year"
+      )
+
+      # Assign Mut_N_Prior and WT_N_Prior for the current year
+      Mut_N_Prior[i] <- pripost$Mut_N_Prior
+      WT_N_Prior[i] <- pripost$WT_N_Prior
+    } else {
+      # There's no corresponding year in df_prior
+      # Use Jeffrey's prior for Mut_N_Prior and WT_N_Prior
+      Mut_N_Prior[i] <- .5
+      WT_N_Prior[i] <- .5
+    }
+
+    # Calculate posterior values for the current year
+    a_post <- Mut_N_Prior[i] + df_likelihood$Mut_N_New[i]
+    b_post <- WT_N_Prior[i] + df_likelihood$N_New[i] - df_likelihood$Mut_N_New[i]
+    posterior <- round(qbeta(c(0.5, 0.025, 0.975), a_post, b_post), 3)
+
+    # Store posterior values in vectors
+    posterior_prevalence <- c(posterior_prevalence, posterior[1])
+    posterior_lb <- c(posterior_lb, posterior[2])
+    posterior_ub <- c(posterior_ub, posterior[3])
+    corresponding_year <- c(corresponding_year, year %in% df_prior$Year)
+  }
+
+  # Create a data frame with the calculated values
+  pripost <- data.frame(
+    Year = df_likelihood$Year,
+    Locus = df_likelihood$Locus,
+    Mut_N_Prior = Mut_N_Prior,
+    WT_N_Prior = WT_N_Prior,
+    Mut_N_New = df_likelihood$Mut_N_New,
+    N_New = df_likelihood$N_New,
+    Corresponding_Year = corresponding_year,
+    Posterior_Prevalence = posterior_prevalence,
+    Posterior_LB = posterior_lb,
+    Posterior_UB = posterior_ub
+  )
+
+  # Return the updated data frame
+  return(pripost)
+}
+
+
+
+```
+**the fifth iteration of the percolateR**
+```{r}
+CRTK76T.5 <- percolateR_0.5(df_prior = df_prior, df_likelihood = df_likelihood, 76)
+
+CRTK76T.5$Year <- as.numeric(CRTK76T.5$Year)
+
+head(CRTK76T.5)
+
+kable(CRTK76T.5, "html") %>%
+  kable_styling(full_width = FALSE) %>%
+  row_spec(0, bold = TRUE) 
+library(ggplot2)
+```
+
+
+```{r}
+# Assuming CRTK76T.5 is your data frame
+
+# Convert Year column to numeric
+CRTK76T.5$Year <- as.numeric(CRTK76T.5$Year)
+
+
+# Plotting
+ggplot(CRTK76T.5) +
+  geom_line(aes(x = Year, y = Posterior_Prevalence, color = "CRT-K76T")) +
+  geom_ribbon(aes(x = Year, ymin = Posterior_LB, ymax = Posterior_UB, fill = "95% Credible Interval"), fill = "lightblue", alpha = 0.5) +
+  labs(x = "Year", y = "Posterior Prevalence",
+       title = "Posterior Prevalence of PfCRT Polymorphisms Over Time",
+       subtitle = "Shade is 95% credible interval") +
+  scale_color_manual(name = "Locus", values = c("CRT-K76T" = "darkblue")) +
+  scale_fill_identity(name = "Legend", guide = "legend", labels = c("95% Credible Interval")) +
+  theme_minimal()
+
+
+```
+
+making the table for crt
+```{r}
+library(kableExtra)
+
+allMDR.5 <- rbind(PfMDR_86.5, PfMDR_184.5, PfMDR_1246.5)
+
+kable(allMDR.5, "html") %>%
+  kable_styling(full_width = FALSE) %>%
+  row_spec(0, bold = TRUE) 
+```
+
+```{r}
+
+# Calculate posterior prevalence for different scenarios
+PfMDR_86.5 <- percolateR_0.5(df_prior, df_likelihood, 86)
+PfMDR_184.5 <- percolateR_0.5(df_prior, df_likelihood, 184)
+PfMDR_1246.5 <- percolateR_0.5(df_prior, df_likelihood, 1246)
+
+# Convert Year column to numeric
+PfMDR_86.5$Year <- as.numeric(PfMDR_86.5$Year)
+PfMDR_184.5$Year <- as.numeric(PfMDR_184.5$Year)
+PfMDR_1246.5$Year <- as.numeric(PfMDR_1246.5$Year)
+
+
+```
+
+```{r}
+ggplot() +
+  geom_line(data = PfMDR_86.5, aes(x = Year, y = Posterior_Prevalence, color = "MDR1-N86Y")) +
+  geom_ribbon(data = PfMDR_86.5, aes(x = Year, ymin = Posterior_LB, ymax = Posterior_UB, fill = "MDR1-N86Y"), fill = "coral", alpha = 0.5) +
+  geom_line(data = PfMDR_184.5, aes(x = Year, y = Posterior_Prevalence, color = "MDR1-Y184F")) +
+  geom_ribbon(data = PfMDR_184.5, aes(x = Year, ymin = Posterior_LB, ymax = Posterior_UB, fill = "MDR1-Y184F"), fill = "lightgreen", alpha = 0.5) +
+  geom_line(data = PfMDR_1246.5, aes(x = Year, y = Posterior_Prevalence, color = "MDR1-D1246Y")) +
+  geom_ribbon(data = PfMDR_1246.5, aes(x = Year, ymin = Posterior_LB, ymax = Posterior_UB, fill = "MDR1-D1246Y"), fill = "lightblue", alpha = 0.5) +
+  scale_color_manual(name = "Locus", values = c("MDR1-D1246Y" = "darkblue", "MDR1-Y184F" = "darkgreen", "MDR1-N86Y" = "darkred")) +
+  scale_fill_identity(name = "Legend", guide = "legend") +
+  labs(x = "Year", y = "Posterior Prevalence",
+       title = "Posterior Prevalence of PfMDR1 Polymorphisms Over Time",
+       subtitle = "Shade is 95% credible interval",
+       fill = "95% Credible Interval") +
+  theme_minimal()
+
+
+```
+**seeing if the code works**
+**test MDR 1246, 2008**
+```{r}
+#in our original posterior df Mut_N = 22, N = 40
+# in our prior information WT_N = 35, Mut_N = 111
+
+percolateR(Mut_N_Prior = 35, WT_N_Prior = 111, Mut_N_New = 22, N_New = 40)
+
+```
+
