@@ -28,6 +28,11 @@ All years which had no corresponding information are parameterized via Jeffreys 
 
 ![unnamed](https://github.com/user-attachments/assets/48138212-5c41-469b-8141-9efc3a57fb42)
 
+Our wished for causal parameter is the mean difference in probability of contracting a P.f. infection with a WHO validated/candidate k13 polymorphism if, contrary to the fact, every study subject lived in district received IRS, vs if, contrary to the fact, no study subject lived in district received IRS.
+
+Ψ*(P*) = E*(Y1) - E*(Y0)
+
+
 
 
 
