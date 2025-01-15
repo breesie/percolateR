@@ -24,7 +24,10 @@ All years which had no corresponding information are parameterized via Jeffreys 
 
 ![unnamed](https://github.com/user-attachments/assets/6a6264a2-9bf6-4aee-bd60-6d7c5db81cee)
 
-2. k13_TMLE is an implementation of a "causal inference estimator" targeted maximum likelihood estimation for the DAG below, done in order to understand the unidentified impact of indoor residual spraying on the emergence of k13 mutations within Ugandan Plasmodium falciparum populations. This implementation respects district level clustering. 
+2. k13_TMLE is an implementation of a "causal inference estimator" targeted maximum likelihood estimation for the DAG below, done in order to understand the unidentified impact of indoor residual spraying on the emergence of k13 mutations within Ugandan Plasmodium falciparum populations. This implementation respects district level clustering.
+
+![unnamed](https://github.com/user-attachments/assets/48138212-5c41-469b-8141-9efc3a57fb42)
+
 
 
 
