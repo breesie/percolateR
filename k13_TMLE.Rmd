@@ -1,0 +1,575 @@
+
+
+```{r}
+
+library(readr)
+library(dplyr)
+library(readr)
+sample_genotypes_metadata <- read_csv("~/Causal Inference/Final Project K13/sample_genotypes_metadata.csv")
+
+
+unique(sample_genotypes_metadata$HF)
+```
+
+Making indicator if patient has any validated or candidate associated K13 marker
+https://www.who.int/news-room/questions-and-answers/item/artemisinin-resistance
+```{r}
+
+filtered_metadata <- na.omit(sample_genotypes_metadata %>%
+  select(barcode, District, antimalarialcat, ageyrs, IRS2, Endemicity, NEWsiteID, sex,
+         matches('F446I|P441L|N458Y|G449A|C469Y|C469F|M476I|A481V|Y493H|R515K|R539T|P527H|I543T|N537D|N537I|P553L|G538V|R561H|V568G|P574L|C580Y|R622I|A675V')))
+
+
+
+#making >5 or <5 indicator variable 
+filtered1_metadata <- filtered_metadata %>%
+  mutate(agebin = ifelse(
+    ageyrs > 5, 1, 0))
+
+#making valid K13 marker indicator variable
+
+filtered2_metadata <- filtered1_metadata %>% 
+  mutate(k13mut = ifelse(
+    k13_M476I == 1 | k13_M476I == 2 |
+    k13_R515K == 1 | k13_R515K == 2 |
+    k13_R539T == 1 | k13_R539T == 2 |
+    k13_I543T == 1 | k13_I543T == 2 |
+    k13_C580Y == 1 | k13_C580Y == 2 |
+    k13_R622I == 1 | k13_R622I == 2 |
+    k13_A675V == 1 | k13_A675V == 2 |
+    k13_P441L == 1 | k13_P441L == 2 |
+    k13_C469Y == 1 | k13_C469Y == 2 |
+    k13_C469F == 1 | k13_C469F == 2 |
+    k13_R561H == 1 | k13_R561H == 2 |
+    k13_V568G == 1 | k13_V568G == 2, 1, 0)) 
+
+
+         
+
+filtered3_metadata <- filtered2_metadata %>% 
+  select(barcode, District, antimalarialcat, agebin, IRS2, Endemicity, k13mut, ageyrs, sex, NEWsiteID)%>%
+  na.omit(.)
+
+
+# recoding IRS2 to binary indicator(IRS or not , IRS started 2022 is 0)
+filtered3_metadata <- filtered3_metadata %>%
+  mutate(IRSever_pre2022 = ifelse(is.na(IRS2) | IRS2 == "None" |IRS2 == "Started 2022", 0, 1))
+
+#making health center variable, making endemicity factor variable, and gender variable (sex male = 1)
+filtered3_metadata <- filtered3_metadata %>%
+  mutate(healthcenterlvl = case_when(
+    is.na(NEWsiteID) ~ 0,  # If NEWsiteID is NA, assign 0
+    grepl("IV", NEWsiteID) ~ 4,  # If NEWsiteID contains "IV", assign 4
+    grepl("III", NEWsiteID) ~ 3,  # If NEWsiteID contains "III", assign 3
+    grepl("II", NEWsiteID) ~ 2,  # If NEWsiteID contains "II", assign 2
+    grepl("I", NEWsiteID) ~ 1,  # If NEWsiteID contains "I", assign 1
+    TRUE ~ 0  # For any other cases, assign 0
+  ))  %>%
+  mutate(Endemicityfactor = as.numeric(factor(Endemicity, levels = c("Low", "Medium", "High")))) %>%
+   mutate(sexfactor = as.numeric(factor(sex, levels = c("Male", "Female"))))
+  
+
+
+
+write.csv(filtered3_metadata, "Real_Filtered_DF_for_tables+estimation.csv", row.names = FALSE)
+
+
+
+```
+
+```{r}
+mean(filtered3_metadata$k13mut)
+mean(filtered3_metadata$IRSever_pre2022)
+```
+
+```{r}
+#need to make a covariate df with ID's 
+
+
+install.packages("ltmle")
+install.packages("SuperLearner")
+library("SuperLearner")
+library("ltmle")
+#specify library, I think xgboost is coo
+
+SuperLearner::listWrappers("SL")
+install.packages("randomForest")
+install.packages("xgboost")
+install.packages("earth")
+install.packages("glmnet")
+
+library("randomForest")
+library("xgboost")
+library("earth")
+library("glmnet")
+
+
+
+SL.library.1 <- c("SL.mean", "SL.glm", "SL.step.interaction", "SL.xgboost", "SL.randomForest", "SL.glm.interaction", "SL.earth", "SL.gam")
+
+SL.library.2 <- c("SL.mean", "SL.glm", "SL.step.interaction", "SL.glmnet", "SL.glm.interaction", "SL.earth", "SL.gam", "SL.randomForest")
+
+SL.library.3 <-  c("SL.mean", "SL.step", "SL.glm", "SL.glm.interaction", "SL.gam", "SL.glmnet", "SL.earth")
+
+SL.library.4 <-  c("SL.mean", "SL.randomForest")
+
+
+
+```
+
+```{r}
+#regular super learner model
+
+
+set.seed(123)
+
+#creating df with just predictor variables IRS ever and District as a factor
+X.K13 <- filtered3_metadata %>%
+  select(IRSever, District) %>%
+  mutate(District = as.numeric(factor(District)))
+
+
+
+#fitting with k13 mutant outcome with 20fold cross validation
+SL.K13 <- SuperLearner(Y = filtered3_metadata$k13mut,  
+                       X = X.K13, 
+                       SL.library=SL.library, 
+                       cvControl = list(V = 20),
+                       family="binomial")
+
+SL.K13
+
+```
+
+```{r}
+#getting the ATE
+
+
+X.K13.1 <- X.K13.0 <- X.K13
+X.K13.1$IRSever <- 1   #all receive IRS    
+X.K13.0$IRSever <- 0   #none receive IRS
+
+# given irs 1
+expY.givenIRS.1 <- predict(SL.K13, newdata=X.K13.1)$pred
+
+# given irs 0
+expY.givenIRS.0<- predict(SL.K13, newdata = X.K13.0)$pred
+
+#simple substitution estimator
+
+PsiHat.SS <-mean(expY.givenIRS.1 - expY.givenIRS.0)
+
+PsiHat.SS
+
+#there is a 5.5% difference in the probability of having a K13 polymorphism if everyone in our study population received IRS, VS if no one receives IRS
+
+```
+
+```{r}
+#super learner with age added
+
+
+set.seed(123)
+
+#creating df with just predictor variables IRS ever and District as a factor
+X.K13.a <- filtered3_metadata %>%
+  select(IRSever, District, ageyrs) %>%
+  mutate(District = as.numeric(factor(District)))
+
+
+
+#fitting with k13 mutant outcome with 20fold cross validation
+SL.K13.a <- SuperLearner(Y = filtered3_metadata$k13mut,  
+                       X = X.K13.a, 
+                       SL.library=SL.library, 
+                       cvControl = list(V = 20),
+                       family="binomial")
+
+SL.K13.a
+
+```
+```{r}
+#getting the ATE with age 
+
+
+X.K13.1.a <- X.K13.0.a <- X.K13.a
+X.K13.1.a$IRSever <- 1   #all receive IRS    
+X.K13.0.a$IRSever <- 0   #none receive IRS
+
+# given irs 1
+expY.givenIRS.1.a <- predict(SL.K13.a, newdata=X.K13.1.a)$pred
+
+# given irs 0
+expY.givenIRS.0.a<- predict(SL.K13.a, newdata = X.K13.0.a)$pred
+
+#simple substitution estimator
+
+PsiHat.SS.a <-mean(expY.givenIRS.1.a - expY.givenIRS.0.a)
+
+PsiHat.SS.a
+
+#there is a 7.3% difference in the probability of having a K13 polymorphism if everyone in our study population received IRS, VS if no one receives IRS when adjusted for age 
+
+```
+
+```{r}
+
+
+#super learner with age, endemicity,
+
+
+set.seed(123)
+
+#creating df with just predictor variables IRS ever and District as a factor
+X.K13.b <- filtered3_metadata %>%
+  select(IRSever, District, ageyrs, Endemicity) %>%
+  mutate(District = as.numeric(factor(District))) %>%
+  mutate(Endemicity = as.numeric(factor(Endemicity, levels = c("Low", "Medium", "High"))))
+
+
+
+#fitting with k13 mutant outcome with 20fold cross validation
+SL.K13.b <- SuperLearner(Y = filtered3_metadata$k13mut,  
+                       X = X.K13.b, 
+                       SL.library=SL.library, 
+                       cvControl = list(V = 20),
+                       family="binomial")
+
+SL.K13.b
+
+```
+
+
+```{r}
+#getting the ATE with age 
+
+
+X.K13.1.b <- X.K13.0.b <- X.K13.b
+X.K13.1.b$IRSever <- 1   #all receive IRS    
+X.K13.0.b$IRSever <- 0   #none receive IRS
+
+# given irs 1
+expY.givenIRS.1.b <- predict(SL.K13.b, newdata=X.K13.1.b)$pred
+
+# given irs 0
+expY.givenIRS.0.b<- predict(SL.K13.b, newdata = X.K13.0.b)$pred
+
+#simple substitution estimator
+
+PsiHat.SS.b <-mean(expY.givenIRS.1.b - expY.givenIRS.0.b)
+
+PsiHat.SS.b
+
+#there is a 7.2% difference in the probability of having a K13 polymorphism if everyone in our study population received IRS, VS if no one receives IRS when adjusted for age, no different than before  
+
+```
+
+
+***the real TMLE, adjusted for the full covariate set***
+```{r}
+#beginning targeted maximum likelihood 
+#Anodes exposure, ynode outcome 
+set.seed(123)
+
+X.K13.tmle <- filtered3_metadata %>%
+   mutate(District = as.numeric(factor(District))) %>%
+  select(IRSever_pre2022, sexfactor, ageyrs, healthcenterlvl, Endemicityfactor, District, k13mut) %>%
+  mutate(District = as.numeric(factor(District))) 
+
+
+
+IDs <- X.K13.tmle$District
+
+
+X.K13.tmle <- X.K13.tmle %>%
+  rename(
+         W1 = ageyrs,
+         W2 = sexfactor,
+         W3 = healthcenterlvl,
+         W4 = Endemicityfactor,
+         A = IRSever_pre2022,
+         Y = k13mut) %>%
+  select(W1, W2, W3, W4, A, Y) 
+
+
+
+ltmle.SL.k13.fr <- ltmle(data = X.K13.tmle, #fr = for real
+                      Anodes = 'A',
+                      Ynodes = 'Y',  
+                      id = IDs,
+                      abar = list(1,0), 
+                      SL.library = SL.library.3)
+
+
+summary(ltmle.SL.k13.fr)
+
+```
+***the real TMLE, split df for age***
+
+```{r}
+
+X.K13.tmle.g5yo <- filtered3_metadata %>%
+   mutate(District = as.numeric(factor(District))) %>%
+  mutate(District = as.numeric(factor(District))) %>% 
+  filter(agebin == 1) %>%
+  select(IRSever_pre2022, sexfactor, ageyrs, healthcenterlvl, Endemicityfactor, District, k13mut)
+  
+
+
+IDs.g5yo <- X.K13.tmle.g5yo$District
+  
+  
+X.K13.tmle.l5yo <- filtered3_metadata %>%
+   mutate(District = as.numeric(factor(District))) %>%
+  mutate(District = as.numeric(factor(District)))  %>% 
+  filter(agebin == 0) %>%
+  select(IRSever_pre2022, sexfactor, ageyrs, healthcenterlvl, Endemicityfactor, District, k13mut)
+
+IDs.l5yo <- X.K13.tmle.l5yo$District
+
+```
+
+
+**effect estimates g5yo**
+```{r}
+
+X.K13.tmle.g5yo <- X.K13.tmle.g5yo %>%
+  rename(
+         W1 = ageyrs,
+         W2 = sexfactor,
+         W3 = healthcenterlvl,
+         W4 = Endemicityfactor,
+         A = IRSever_pre2022,
+         Y = k13mut) %>%
+  select(W1, W2, W3, W4, A, Y) 
+
+
+ltmle.SL.k13..g5yo <- ltmle(data = X.K13.tmle.g5yo, #fr = for real
+                      Anodes = 'A',
+                      Ynodes = 'Y',  
+                      id = IDs.g5yo,
+                      abar = list(1,0), 
+                      SL.library = SL.library.3)
+
+
+summary(ltmle.SL.k13..g5yo)
+
+```
+**effect estimates less than 5yo**
+
+```{r}
+X.K13.tmle.l5yo <- X.K13.tmle.l5yo %>%
+  rename(
+         W1 = ageyrs,
+         W2 = sexfactor,
+         W3 = healthcenterlvl,
+         W4 = Endemicityfactor,
+         A = IRSever_pre2022,
+         Y = k13mut) %>%
+  select(W1, W2, W3, W4, A, Y) 
+
+
+ltmle.SL.k13..l5yo <- ltmle(data = X.K13.tmle.l5yo, #fr = for real
+                      Anodes = 'A',
+                      Ynodes = 'Y',  
+                      id = IDs.l5yo,
+                      abar = list(1,0), 
+                      SL.library = SL.library.3)
+
+
+summary(ltmle.SL.k13..l5yo)
+
+
+
+```
+
+
+
+```{r}
+library(SuperLearner)
+library(dplyr)
+
+# Define covariates, treatment, and outcome variables
+X.K13.tmle <- filtered3_metadata %>%
+  mutate(District = as.numeric(factor(District))) %>%
+  select(IRSever_pre2022, sexfactor, ageyrs, healthcenterlvl, Endemicityfactor, District, k13mut) %>%
+  rename(
+    W1 = ageyrs,
+    W2 = sexfactor,
+    W3 = healthcenterlvl,
+    W4 = Endemicityfactor,
+    A = IRSever_pre2022,
+    Y = k13mut
+  )
+
+
+SL.library.3 <-  c("SL.mean", "SL.step", "SL.glm", "SL.glm.interaction", "SL.gam", "SL.glmnet", "SL.earth")
+
+# Prepare clustering variable
+IDs <- X.K13.tmle$District
+
+
+
+
+# Train Super Learner
+sl_fit <- SuperLearner(
+  Y = X.K13.tmle$Y,
+  X = X.K13.tmle %>% select(W1, W2, W3, W4, A),
+  SL.library = SL.library.3,
+  family = "binomial"
+)
+
+# Evaluate Super Learner performance
+sl_fit
+
+
+cv_results
+
+```
+**checking eason's results using simple substitution estimator**
+```{r}
+
+ltmle.SL.k13.ssestm <- ltmle(data = X.K13.tmle, #fr = for real
+                      Anodes = 'A',
+                      Ynodes = 'Y',  
+                      id = IDs,
+                      abar = list(1,0), 
+                      gcomp = TRUE,
+                      SL.library = SL.library.2)
+
+summary(ltmle.SL.k13.ssestm)
+```
+
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+$ATE = (1/N) * sum_{i=1}^{N} (E{Y_i | A_i = 1, W_i} - E{Y_i | A_i = 0, W_i})$
+  
+```
+
+```{r}
+#------------ Gonna try to adjust for more things and see what happens, adding in endemicity, clinical malaria
+
+
+X.K13.tmle.a <- filtered3_metadata %>%
+  mutate(District = as.numeric(factor(District))) %>%
+  mutate(Endemicity = as.numeric(factor(Endemicity, levels = c("Low", "Medium", "High")))) %>%
+  rename(W1 = District,
+         W2 = Endemicity,
+         W3 = ageyrs,
+         A = IRSever,
+         Y = k13mut) %>%
+  select(W1, W2, W3, A, Y) #for _whatever fucking reason the columns need to be ordered W, A, Y, beats me man_
+
+
+ltmle.SL.k13.a <- ltmle(data = X.K13.tmle.a, 
+                      Anodes = 'A',
+                      Ynodes = 'Y',  
+                      id = X.K13.tmle$W1,
+                      abar = list(1,0), 
+                      SL.library = SL.library)
+
+summary(ltmle.SL.k13.a)
+
+#adding extra covariates just increases our standard error
+```
+
+    
+```{r}
+
+unique_IRSever <- unique(filtered1_metadata$IRS2)
+print(unique_IRSever)
+```
+
+
+```{r}
+# recoding IRS2 to binary indicator(IRS or not , IRS started 2022 is 0)
+filtered3.1_metadata <- filtered3_metadata %>%
+  mutate(IRSever = ifelse(is.na(IRS2) | IRS2 == "None" |IRS2 == "Started 2022", 0, 1))
+
+mean(filtered3_metadata$IRSever)
+mean(filtered3.1_metadata$IRSever) #worked, less in the IRSever column
+
+
+X.K13.tmle.b <- filtered3.1_metadata %>%
+  select(IRSever, District, k13mut) %>%
+  mutate(District = as.numeric(factor(District))) %>%
+  rename(W = District,
+         A = IRSever,
+         Y = k13mut) %>%
+  select(W, A, Y)
+
+
+ltmle.SL.k13.b <- ltmle(data = X.K13.tmle.b, 
+                      Anodes = 'A',
+                      Ynodes = 'Y',  
+                      id = X.K13.tmle.b$W,
+                      abar = list(1,0), 
+                      SL.library = SL.library)
+
+summary(ltmle.SL.k13.b)
+
+#Additive Treatment Effect:
+   #Parameter Estimate:  0.13574 
+    #Estimated Std Err:  0.03419 
+       #       p-value:  0.00050547 
+    #95% Conf Interval: (0.065457, 0.20601) 
+
+```
+
+```{r}
+#adding age 
+X.K13.tmle.c <- filtered3.1_metadata %>%
+  select(IRSever, District, k13mut, ageyrs) %>%
+  mutate(District = as.numeric(factor(District))) %>%
+  rename(W1 = District,
+         W2 = ageyrs,
+         A = IRSever,
+         Y = k13mut) %>%
+  select(W1, W2, A, Y)
+
+
+ltmle.SL.k13.c <- ltmle(data = X.K13.tmle.c, 
+                      Anodes = 'A',
+                      Ynodes = 'Y',  
+                      id = X.K13.tmle.c$W1,
+                      abar = list(1,0), 
+                      SL.library = SL.library)
+
+summary(ltmle.SL.k13.c)
+
+#Additive Treatment Effect:
+   #Parameter Estimate:  0.15388 
+    #Estimated Std Err:  0.03734 
+            #  p-value:  0.00034068 
+   # 95% Conf Interval: (0.077129, 0.23064) 
+
+
+
+```
+
+```{r}
+#adding age, endemicity,
+
+X.K13.tmle.d <- filtered3.1_metadata %>%
+  select(IRSever, District, k13mut, ageyrs, Endemicity) %>%
+ mutate(Endemicity = as.numeric(factor(Endemicity, levels = c("Low", "Medium", "High")))) %>%
+  mutate(District = as.numeric(factor(District))) %>%
+  rename(W1 = District,
+         W2 = ageyrs,
+         W3 = Endemicity,
+         A = IRSever,
+         Y = k13mut) %>%
+  select(W1, W2, W3, A, Y)
+
+
+ltmle.SL.k13.d <- ltmle(data = X.K13.tmle.d, 
+                      Anodes = 'A',
+                      Ynodes = 'Y',  
+                      id = X.K13.tmle.d$W1,
+                      abar = list(1,0), 
+                      SL.library = SL.library)
+
+summary(ltmle.SL.k13.d)
+```
+
