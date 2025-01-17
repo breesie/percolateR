@@ -561,7 +561,7 @@ library(ggplot2)
 
 
 ```{r}
-# Assuming CRTK76T.5 is your data frame
+
 
 # Convert Year column to numeric
 CRTK76T.5$Year <- as.numeric(CRTK76T.5$Year)
